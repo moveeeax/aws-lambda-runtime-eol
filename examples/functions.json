@@ -1,0 +1,7 @@
+[
+  { "name": "billing-cron",   "runtime": "python3.8",  "lastModified": "2023-02-11T09:14:00.000+0000" },
+  { "name": "edge-router",     "runtime": "nodejs18.x", "lastModified": "2024-11-02T18:30:00.000+0000" },
+  { "name": "thumbnailer",     "runtime": "go1.x",      "lastModified": "2022-08-19T12:00:00.000+0000" },
+  { "name": "image-resize",    "runtime": "nodejs20.x", "lastModified": "2025-05-01T07:45:00.000+0000" },
+  { "name": "auth-authorizer", "runtime": "python3.12", "lastModified": "2025-06-20T22:10:00.000+0000" }
+]
