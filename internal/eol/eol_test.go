@@ -67,7 +67,8 @@ func TestClassifyWarningAndOK(t *testing.T) {
 func TestClassifyUnknownRuntimeIsOK(t *testing.T) {
 	tbl := mustTable(t)
 	now := date(t, "2026-01-01")
-	f := tbl.Classify([]Function{{Name: "fresh", Runtime: "nodejs20.x"}}, now, 90)[0]
+	// nodejs26.x has no deprecation date scheduled by AWS, so it is not in the table.
+	f := tbl.Classify([]Function{{Name: "fresh", Runtime: "nodejs26.x"}}, now, 90)[0]
 	if f.Status != StatusOK || f.Severity != SeverityNone {
 		t.Errorf("unknown runtime: got %s/%s, want OK/none", f.Status, f.Severity)
 	}
@@ -176,6 +177,33 @@ func TestParseSeverity(t *testing.T) {
 	}
 	if _, err := ParseSeverity("low"); err == nil {
 		t.Error("low should be rejected")
+	}
+}
+
+// Runtimes AWS deprecated after the table's previous review (2025-06-01) must
+// classify as EXPIRED, not fall through to OK as unknown runtimes.
+func TestDefaultTableCoversRecentDeprecations(t *testing.T) {
+	tbl := mustTable(t)
+	now := date(t, "2026-11-02")
+	want := map[string]string{
+		"nodejs20.x":   "2026-04-30",
+		"ruby3.2":      "2026-03-31",
+		"provided.al2": "2026-07-31",
+		"python3.10":   "2026-10-31",
+		"python3.9":    "2025-12-15",
+		"dotnet6":      "2024-12-20",
+		"dotnet7":      "2024-05-14",
+	}
+	for runtime, eolDate := range want {
+		f := tbl.Classify([]Function{{Name: "f", Runtime: runtime}}, now, 90)[0]
+		if f.Status != StatusExpired || f.EOLDate != eolDate {
+			t.Errorf("%s: got %s/%q, want EXPIRED/%q", runtime, f.Status, f.EOLDate, eolDate)
+		}
+	}
+	// dotnet8 is deprecated on 2026-11-10: inside a 90-day window, not yet past it.
+	f := tbl.Classify([]Function{{Name: "f", Runtime: "dotnet8"}}, now, 90)[0]
+	if f.Status != StatusWarning {
+		t.Errorf("dotnet8: got %s, want WARNING", f.Status)
 	}
 }
 

@@ -1,7 +1,7 @@
 # aws-lambda-runtime-eol
 
 [![ci](https://github.com/moveeeax/aws-lambda-runtime-eol/actions/workflows/ci.yml/badge.svg)](https://github.com/moveeeax/aws-lambda-runtime-eol/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Find the AWS Lambda functions running a runtime that is already past its
@@ -20,7 +20,11 @@ and tells you exactly which ones are on borrowed time.
   SDK and the standard credential chain.
 - Compares each runtime against a **compiled-in table** of AWS deprecation
   dates, so classification is offline and deterministic. Override it any time
-  with `--eol-data table.json`.
+  with `--eol-data table.json`. The table follows the supported and deprecated
+  runtime tables in the
+  [Lambda developer guide](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html);
+  a runtime that is not in it (for example one AWS has not scheduled for
+  deprecation yet) is reported as `OK`.
 - Classifies each function as `EXPIRED` (past EOL, **high**), `WARNING` (within
   `--within` days, default 90, **medium**), or `OK` (**none**).
 - Prints a table or JSON, and can gate CI with `--fail-on high|medium`
@@ -63,10 +67,10 @@ Run it offline against the bundled fixture (no AWS account needed):
 $ aws-lambda-runtime-eol scan --input examples/functions.json --now 2025-07-03 --within 90
 FUNCTION         RUNTIME     STATUS   SEVERITY  EOL DATE    DAYS LEFT
 billing-cron     python3.8   EXPIRED  high      2024-10-14  -262
-thumbnailer      go1.x       EXPIRED  high      2023-12-31  -550
+thumbnailer      go1.x       EXPIRED  high      2024-01-08  -542
 edge-router      nodejs18.x  WARNING  medium    2025-09-01  60
-auth-authorizer  python3.12  OK       none      -           -
-image-resize     nodejs20.x  OK       none      -           -
+auth-authorizer  python3.12  OK       none      2028-10-31  1216
+image-resize     nodejs20.x  OK       none      2026-04-30  301
 
 5 function(s) in input file examples/functions.json: 2 expired, 1 within 90d, 2 ok
 ```
@@ -110,8 +114,9 @@ image-resize     nodejs20.x  OK       none      -           -
 
 ## Notes
 
-- The embedded EOL table is a snapshot (see `TableAsOf` in `internal/eol`). AWS
-  updates dates; keep the tool current with `--eol-data` when a date changes.
+- The embedded EOL table is a snapshot (see `TableAsOf` in `internal/eol`, last
+  reviewed 2026-11-02). AWS updates dates and adds runtimes; keep the tool
+  current with `--eol-data` when a date changes.
 - The tool is read-only: it calls `ListFunctions` and nothing else.
 
 ## License
