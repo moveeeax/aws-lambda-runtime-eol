@@ -16,7 +16,7 @@ const DateLayout = "2006-01-02"
 
 // TableAsOf documents when the embedded EOL table was last reviewed. Runtimes
 // change on AWS's schedule; override the table with --eol-data when in doubt.
-const TableAsOf = "2025-06-01"
+const TableAsOf = "2026-11-02"
 
 // Status is the classification of a single function's runtime.
 type Status string
@@ -82,41 +82,73 @@ type Finding struct {
 	Severity     Severity `json:"severity"`
 }
 
-// DefaultTable is the compiled-in map of Lambda runtime -> deprecation (phase 1)
-// date, as published by AWS and reviewed on TableAsOf. It lets the tool run
-// offline and deterministically; override any entry with --eol-data.
+// DefaultTable is the compiled-in map of Lambda runtime -> deprecation date, as
+// published in the "Supported runtimes" and "Deprecated runtimes" tables of
+// https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html and reviewed
+// on TableAsOf. Supported runtimes are listed with their scheduled deprecation
+// date so they move to WARNING ahead of time; runtimes AWS lists as "Not
+// scheduled" (and anything else missing here) classify as OK. The table lets the
+// tool run offline and deterministically; override it with --eol-data.
 var DefaultTable = map[string]string{
 	// Node.js
-	"nodejs":     "2016-10-31",
-	"nodejs4.3":  "2018-04-30",
-	"nodejs6.10": "2019-04-30",
-	"nodejs8.10": "2020-03-06",
-	"nodejs10.x": "2021-07-30",
-	"nodejs12.x": "2023-03-31",
-	"nodejs14.x": "2023-12-04",
-	"nodejs16.x": "2024-06-12",
-	"nodejs18.x": "2025-09-01",
+	"nodejs":         "2016-08-30",
+	"nodejs4.3":      "2020-03-05",
+	"nodejs4.3-edge": "2020-03-05",
+	"nodejs6.10":     "2019-08-12",
+	"nodejs8.10":     "2020-03-06",
+	"nodejs10.x":     "2021-07-30",
+	"nodejs12.x":     "2023-03-31",
+	"nodejs14.x":     "2023-12-04",
+	"nodejs16.x":     "2024-06-12",
+	"nodejs18.x":     "2025-09-01",
+	"nodejs20.x":     "2026-04-30",
+	"nodejs22.x":     "2027-04-30",
+	"nodejs24.x":     "2028-04-30",
 	// Python
-	"python2.7": "2021-07-15",
-	"python3.6": "2022-07-18",
-	"python3.7": "2023-12-04",
-	"python3.8": "2024-10-14",
-	"python3.9": "2025-12-15",
+	"python2.7":  "2021-07-15",
+	"python3.6":  "2022-07-18",
+	"python3.7":  "2023-12-04",
+	"python3.8":  "2024-10-14",
+	"python3.9":  "2025-12-15",
+	"python3.10": "2026-10-31",
+	"python3.11": "2027-06-30",
+	"python3.12": "2028-10-31",
+	"python3.13": "2029-06-30",
+	"python3.14": "2029-06-30",
 	// Go (Amazon Linux 1 go1.x runtime)
-	"go1.x": "2023-12-31",
-	// Java (Amazon Linux 1)
-	"java8": "2024-01-08",
+	"go1.x": "2024-01-08",
+	// Java
+	"java8":         "2024-01-08",
+	"java8.al2":     "2027-06-30",
+	"java11":        "2027-06-30",
+	"java17":        "2027-06-30",
+	"java8.al2023":  "2029-06-30",
+	"java11.al2023": "2029-06-30",
+	"java17.al2023": "2029-06-30",
+	"java21":        "2029-06-30",
+	"java25":        "2029-06-30",
 	// .NET
 	"dotnetcore1.0": "2019-06-27",
 	"dotnetcore2.0": "2019-05-30",
-	"dotnetcore2.1": "2023-01-23",
+	"dotnetcore2.1": "2022-01-05",
 	"dotnetcore3.1": "2023-04-03",
 	"dotnet5.0":     "2022-05-10",
+	"dotnet6":       "2024-12-20",
+	"dotnet7":       "2024-05-14",
+	"dotnet8":       "2026-11-10",
+	"dotnet9":       "2026-11-10",
+	"dotnet10":      "2028-11-14",
 	// Ruby
 	"ruby2.5": "2021-07-30",
 	"ruby2.7": "2023-12-07",
-	// Legacy custom runtime on Amazon Linux 1
-	"provided": "2023-12-31",
+	"ruby3.2": "2026-03-31",
+	"ruby3.3": "2027-03-31",
+	"ruby3.4": "2028-03-31",
+	"ruby4.0": "2029-03-31",
+	// OS-only runtimes
+	"provided":        "2024-01-08",
+	"provided.al2":    "2026-07-31",
+	"provided.al2023": "2029-06-30",
 }
 
 // Table is a runtime -> EOL date lookup with the classification logic attached.
@@ -162,7 +194,8 @@ func (t *Table) classifyOne(f Function, now time.Time, within int) Finding {
 
 	eol, known := t.dates[f.Runtime]
 	if !known {
-		// Unknown or current runtime: nothing to warn about.
+		// Not in the table: either a runtime AWS has not scheduled for
+		// deprecation yet, or one this table does not know. Report OK.
 		return fd
 	}
 	fd.EOLDate = eol.Format(DateLayout)
