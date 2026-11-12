@@ -15,7 +15,7 @@ import (
 const DateLayout = "2006-01-02"
 
 // TableAsOf documents when the embedded EOL table was last reviewed. Runtimes
-// change on AWS's schedule; override the table with --eol-data when in doubt.
+// change on AWS's schedule; use --eol-source endoflife or a file when in doubt.
 const TableAsOf = "2026-11-02"
 
 // Status is the classification of a single function's runtime.
@@ -69,6 +69,8 @@ func ParseSeverity(s string) (Severity, error) {
 type Function struct {
 	Name         string `json:"name"`
 	Runtime      string `json:"runtime"`
+	Region       string `json:"region,omitempty"`
+	Version      string `json:"version,omitempty"` // "$LATEST" or a published version number
 	LastModified string `json:"lastModified,omitempty"`
 }
 
@@ -76,6 +78,8 @@ type Function struct {
 type Finding struct {
 	Name         string   `json:"name"`
 	Runtime      string   `json:"runtime"`
+	Region       string   `json:"region,omitempty"`
+	Version      string   `json:"version,omitempty"`
 	EOLDate      string   `json:"eolDate,omitempty"`
 	DaysUntilEOL *int     `json:"daysUntilEOL,omitempty"`
 	Status       Status   `json:"status"`
@@ -88,7 +92,7 @@ type Finding struct {
 // on TableAsOf. Supported runtimes are listed with their scheduled deprecation
 // date so they move to WARNING ahead of time; runtimes AWS lists as "Not
 // scheduled" (and anything else missing here) classify as OK. The table lets the
-// tool run offline and deterministically; override it with --eol-data.
+// tool run offline and deterministically; override it with --eol-source.
 var DefaultTable = map[string]string{
 	// Node.js
 	"nodejs":         "2016-08-30",
@@ -190,7 +194,7 @@ func newTable(m map[string]string) (*Table, error) {
 // classifyOne classifies a single function against the table.
 func (t *Table) classifyOne(f Function, now time.Time, within int) Finding {
 	now = now.UTC().Truncate(24 * time.Hour)
-	fd := Finding{Name: f.Name, Runtime: f.Runtime, Status: StatusOK, Severity: SeverityNone}
+	fd := Finding{Name: f.Name, Runtime: f.Runtime, Region: f.Region, Version: f.Version, Status: StatusOK, Severity: SeverityNone}
 
 	eol, known := t.dates[f.Runtime]
 	if !known {
@@ -214,7 +218,8 @@ func (t *Table) classifyOne(f Function, now time.Time, within int) Finding {
 }
 
 // Classify runs every function through the table and returns findings sorted by
-// severity (worst first) and then by name, so output is stable.
+// severity (worst first), then by name, region and version, so output is
+// stable.
 func (t *Table) Classify(funcs []Function, now time.Time, within int) []Finding {
 	out := make([]Finding, 0, len(funcs))
 	for _, f := range funcs {
@@ -224,7 +229,13 @@ func (t *Table) Classify(funcs []Function, now time.Time, within int) []Finding 
 		if ri, rj := rank(out[i].Severity), rank(out[j].Severity); ri != rj {
 			return ri > rj
 		}
-		return out[i].Name < out[j].Name
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		if out[i].Region != out[j].Region {
+			return out[i].Region < out[j].Region
+		}
+		return out[i].Version < out[j].Version
 	})
 	return out
 }
@@ -238,6 +249,37 @@ func Worst(findings []Finding) Severity {
 		}
 	}
 	return worst
+}
+
+// RegionCounts is the per-region roll-up used in multi-region summaries.
+type RegionCounts struct {
+	Total   int `json:"total"`
+	Expired int `json:"expired"`
+	Warning int `json:"warning"`
+	OK      int `json:"ok"`
+}
+
+// CountsByRegion groups findings by region. Findings without a region (for
+// example from an --input file that does not set one) are not counted.
+func CountsByRegion(findings []Finding) map[string]RegionCounts {
+	out := map[string]RegionCounts{}
+	for _, f := range findings {
+		if f.Region == "" {
+			continue
+		}
+		c := out[f.Region]
+		c.Total++
+		switch f.Status {
+		case StatusExpired:
+			c.Expired++
+		case StatusWarning:
+			c.Warning++
+		default:
+			c.OK++
+		}
+		out[f.Region] = c
+	}
+	return out
 }
 
 // Counts summarises findings by status for a one-line footer.

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,14 +18,26 @@ import (
 )
 
 type scanOpts struct {
-	region  string
-	within  int
-	output  string
-	failOn  string
-	input   string
-	eolData string
-	nowStr  string
+	region     string
+	regions    []string
+	allRegions bool
+	versions   string
+	within     int
+	output     string
+	failOn     string
+	input      string
+	eolData    string
+	eolSource  string
+	nowStr     string
 }
+
+// AWS and network entry points, swapped out in tests so they run offline.
+var (
+	listFunctionsFn = awsx.ListFunctions
+	listRegionsFn   = awsx.ListRegions
+	endOfLifeURL    = eol.EndOfLifeURL
+	httpClient      = http.DefaultClient
+)
 
 func newScanCmd() *cobra.Command {
 	o := &scanOpts{}
@@ -36,11 +51,15 @@ func newScanCmd() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVar(&o.region, "region", "", "AWS region to scan (defaults to the SDK's resolved region)")
+	f.StringSliceVar(&o.regions, "regions", nil, "comma-separated AWS regions to scan, e.g. eu-west-1,us-east-1")
+	f.BoolVar(&o.allRegions, "all-regions", false, "scan every region enabled for the account (ec2:DescribeRegions)")
+	f.StringVar(&o.versions, "versions", "latest", "function versions to scan: latest ($LATEST only) or all (every published version)")
 	f.IntVar(&o.within, "within", 90, "warn on runtimes within this many days of EOL")
 	f.StringVar(&o.output, "output", "table", "output format: table or json")
 	f.StringVar(&o.failOn, "fail-on", "", "exit non-zero if any finding is at least this severe: high or medium")
 	f.StringVar(&o.input, "input", "", "read functions from a JSON file instead of AWS (fully offline)")
-	f.StringVar(&o.eolData, "eol-data", "", "override the embedded EOL table with a JSON file of {runtime: date}")
+	f.StringVar(&o.eolSource, "eol-source", "builtin", "EOL dates: builtin, endoflife (live from endoflife.date, falls back to builtin) or file:<path>")
+	f.StringVar(&o.eolData, "eol-data", "", "same as --eol-source file:<path>")
 	f.StringVar(&o.nowStr, "now", "", "reference date YYYY-MM-DD for classification (default: today, UTC)")
 	return cmd
 }
@@ -52,6 +71,25 @@ func runScan(cmd *cobra.Command, o *scanOpts) error {
 	if o.within < 0 {
 		return fmt.Errorf("--within must be >= 0")
 	}
+	if o.versions != "latest" && o.versions != "all" {
+		return fmt.Errorf("invalid --versions %q (want latest or all)", o.versions)
+	}
+	set := 0
+	for _, b := range []bool{o.region != "", len(o.regions) > 0, o.allRegions} {
+		if b {
+			set++
+		}
+	}
+	if set > 1 {
+		return fmt.Errorf("use only one of --region, --regions and --all-regions")
+	}
+	source := o.eolSource
+	if o.eolData != "" {
+		if cmd.Flags().Changed("eol-source") {
+			return fmt.Errorf("use either --eol-data or --eol-source, not both")
+		}
+		source = "file:" + o.eolData
+	}
 
 	now := time.Now().UTC()
 	if o.nowStr != "" {
@@ -62,7 +100,7 @@ func runScan(cmd *cobra.Command, o *scanOpts) error {
 		now = parsed.UTC()
 	}
 
-	table, err := loadTable(o.eolData)
+	table, usedSource, err := loadTable(cmd.Context(), source, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}
@@ -73,13 +111,14 @@ func runScan(cmd *cobra.Command, o *scanOpts) error {
 	}
 
 	findings := table.Classify(funcs, now, o.within)
+	meta := report.Meta{Scope: scope, WithinDays: o.within, EOLSource: usedSource}
 
 	if o.output == "json" {
-		if err := report.JSON(cmd.OutOrStdout(), scope, o.within, findings); err != nil {
+		if err := report.JSON(cmd.OutOrStdout(), meta, findings); err != nil {
 			return err
 		}
 	} else {
-		if err := report.Table(cmd.OutOrStdout(), scope, o.within, findings); err != nil {
+		if err := report.Table(cmd.OutOrStdout(), meta, findings); err != nil {
 			return err
 		}
 	}
@@ -87,11 +126,28 @@ func runScan(cmd *cobra.Command, o *scanOpts) error {
 	return gate(o.failOn, findings)
 }
 
-func loadTable(path string) (*eol.Table, error) {
-	if path != "" {
-		return eol.LoadTable(path)
+// loadTable resolves --eol-source and returns the table plus the source that
+// was actually used. A failed endoflife.date fetch falls back to the built-in
+// table with a warning on stderr, and the returned source reads "builtin".
+func loadTable(ctx context.Context, source string, stderr io.Writer) (*eol.Table, string, error) {
+	switch {
+	case source == "builtin":
+		t, err := eol.NewDefaultTable()
+		return t, source, err
+	case source == "endoflife":
+		t, err := eol.FetchEndOfLife(ctx, httpClient, endOfLifeURL)
+		if err == nil {
+			return t, source, nil
+		}
+		fmt.Fprintf(stderr, "warning: %v; using built-in EOL table (as of %s)\n", err, eol.TableAsOf)
+		t, err = eol.NewDefaultTable()
+		return t, "builtin", err
+	case strings.HasPrefix(source, "file:") && len(source) > len("file:"):
+		t, err := eol.LoadTable(strings.TrimPrefix(source, "file:"))
+		return t, source, err
+	default:
+		return nil, "", fmt.Errorf("invalid --eol-source %q (want builtin, endoflife or file:<path>)", source)
 	}
-	return eol.NewDefaultTable()
 }
 
 // loadFunctions returns the functions to classify and a human label for the
@@ -104,15 +160,46 @@ func loadFunctions(ctx context.Context, o *scanOpts) ([]eol.Function, string, er
 		}
 		return funcs, "input file " + o.input, nil
 	}
-	funcs, err := awsx.ListFunctions(ctx, o.region)
-	if err != nil {
-		return nil, "", fmt.Errorf("list functions: %w", err)
+	allVersions := o.versions == "all"
+
+	regions := o.regions
+	if o.allRegions {
+		var err error
+		regions, err = listRegionsFn(ctx)
+		if err != nil {
+			return nil, "", fmt.Errorf("list regions: %w", err)
+		}
+		if len(regions) == 0 {
+			return nil, "", fmt.Errorf("list regions: no enabled regions returned")
+		}
 	}
-	scope := o.region
-	if scope == "" {
-		scope = "default region"
+	if len(regions) == 0 {
+		funcs, err := listFunctionsFn(ctx, o.region, allVersions)
+		if err != nil {
+			return nil, "", fmt.Errorf("list functions: %w", err)
+		}
+		scope := o.region
+		if scope == "" {
+			scope = "default region"
+		}
+		return funcs, "region " + scope, nil
 	}
-	return funcs, "region " + scope, nil
+
+	// A failed region aborts the scan: a partial result would under-report
+	// and could let a --fail-on gate pass.
+	var all []eol.Function
+	for _, r := range regions {
+		funcs, err := listFunctionsFn(ctx, r, allVersions)
+		if err != nil {
+			return nil, "", fmt.Errorf("list functions in %s: %w", r, err)
+		}
+		all = append(all, funcs...)
+	}
+	label := "regions "
+	if len(regions) == 1 {
+		label = "region "
+	}
+	return all, label + strings.Join(regions, ", "), nil
 }
 
 // readInputFile accepts either a bare JSON array of functions or an object of

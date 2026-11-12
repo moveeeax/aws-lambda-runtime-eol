@@ -212,3 +212,38 @@ func TestDefaultTableParses(t *testing.T) {
 		t.Fatalf("embedded table has a bad date: %v", err)
 	}
 }
+
+func TestClassifySortsByNameRegionVersion(t *testing.T) {
+	tbl := mustTable(t)
+	got := tbl.Classify([]Function{
+		{Name: "api", Runtime: "python3.12", Region: "us-east-1", Version: "$LATEST"},
+		{Name: "api", Runtime: "python3.12", Region: "eu-west-1", Version: "2"},
+		{Name: "api", Runtime: "python3.12", Region: "eu-west-1", Version: "$LATEST"},
+	}, date(t, "2026-01-01"), 90)
+	order := []string{got[0].Region + "/" + got[0].Version, got[1].Region + "/" + got[1].Version, got[2].Region + "/" + got[2].Version}
+	want := []string{"eu-west-1/$LATEST", "eu-west-1/2", "us-east-1/$LATEST"}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order = %v, want %v", order, want)
+		}
+	}
+}
+
+func TestCountsByRegion(t *testing.T) {
+	tbl := mustTable(t)
+	got := CountsByRegion(tbl.Classify([]Function{
+		{Name: "a", Runtime: "python3.8", Region: "eu-west-1"},
+		{Name: "b", Runtime: "python3.12", Region: "eu-west-1"},
+		{Name: "c", Runtime: "nodejs18.x", Region: "us-east-1"},
+		{Name: "d", Runtime: "python3.12"},
+	}, date(t, "2025-07-03"), 90))
+	if len(got) != 2 {
+		t.Fatalf("got %d regions, want 2 (findings without a region are not counted)", len(got))
+	}
+	if c := got["eu-west-1"]; c.Total != 2 || c.Expired != 1 || c.OK != 1 {
+		t.Errorf("eu-west-1 = %+v, want total 2, expired 1, ok 1", c)
+	}
+	if c := got["us-east-1"]; c.Total != 1 || c.Warning != 1 {
+		t.Errorf("us-east-1 = %+v, want total 1, warning 1", c)
+	}
+}
